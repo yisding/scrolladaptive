@@ -82,6 +82,7 @@ private struct CompositorStats {
   var activeNanoseconds: UInt64 = 0
 }
 
+@MainActor
 private final class CompositorKeepalive {
   private static let size: CGFloat = 1
   private static let colors = (
@@ -148,8 +149,10 @@ private final class CompositorKeepalive {
       leeway: .milliseconds(3)
     )
     surfaceUpdateTimer.setEventHandler { [weak self] in
-      guard let self, self.isActive else { return }
-      self.updateSurface()
+      MainActor.assumeIsolated {
+        guard let self, self.isActive else { return }
+        self.updateSurface()
+      }
     }
     self.surfaceUpdateTimer = surfaceUpdateTimer
     surfaceUpdateTimer.resume()
@@ -333,7 +336,8 @@ private final class TapController: @unchecked Sendable {
 
   // Only called for continuous (trackpad) events.
   private func isEmptyScrollEvent(_ event: CGEvent) -> Bool {
-    guard event.getIntegerValueField(.scrollWheelEventScrollPhase)
+    guard
+      event.getIntegerValueField(.scrollWheelEventScrollPhase)
         == CGScrollPhase.changed.rawValue,
       event.getIntegerValueField(.scrollWheelEventMomentumPhase)
         == CGMomentumScrollPhase.none.rawValue
@@ -344,7 +348,7 @@ private final class TapController: @unchecked Sendable {
   }
 }
 
-private let tapCallback: CGEventTapCallBack = { _, type, event, userInfo in
+private nonisolated let tapCallback: CGEventTapCallBack = { _, type, event, userInfo in
   guard let userInfo else { return Unmanaged.passUnretained(event) }
   let controller = Unmanaged<TapController>.fromOpaque(userInfo).takeUnretainedValue()
   return controller.handle(type: type, event: event)
@@ -353,7 +357,7 @@ private let tapCallback: CGEventTapCallBack = { _, type, event, userInfo in
 private let application = NSApplication.shared
 application.setActivationPolicy(.accessory)
 
-private let compositor = CompositorKeepalive()
+private let compositor = MainActor.assumeIsolated { CompositorKeepalive() }
 private let tapController = TapController(
   startKeepalive: {
     DispatchQueue.main.async {
@@ -378,7 +382,9 @@ private func isVirtualMachine() -> Bool {
 }
 
 private func isAccessibilityTrusted(prompt: Bool) -> Bool {
-  let key = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
+  // The value of kAXTrustedCheckOptionPrompt. Swift 6 rejects the global itself
+  // because it's declared as a mutable var.
+  let key = "AXTrustedCheckOptionPrompt"
   return AXIsProcessTrustedWithOptions([key: prompt] as CFDictionary)
 }
 
@@ -391,9 +397,8 @@ private func arm() {
 }
 
 // Wait for Accessibility permission instead of exiting, so a first run from a
-// LaunchAgent doesn't need a restart after the user grants it.
-private var permissionTimer: Timer?
-
+// LaunchAgent doesn't need a restart after the user grants it. The main run loop
+// keeps the timer alive until it invalidates itself.
 private func armWhenTrusted() {
   if isAccessibilityTrusted(prompt: true) {
     arm()
@@ -403,13 +408,10 @@ private func armWhenTrusted() {
     "waiting for Accessibility permission. Enable scrolladaptive in System Settings > "
       + "Privacy & Security > Accessibility."
   )
-  permissionTimer = Timer.scheduledTimer(
-    withTimeInterval: permissionPollSeconds, repeats: true
-  ) { timer in
+  Timer.scheduledTimer(withTimeInterval: permissionPollSeconds, repeats: true) { timer in
     guard isAccessibilityTrusted(prompt: false) else { return }
     timer.invalidate()
-    permissionTimer = nil
-    arm()
+    MainActor.assumeIsolated { arm() }
   }
 }
 
@@ -420,6 +422,7 @@ if !isVirtualMachine() {
   )
 }
 
+@MainActor
 private func finish(signalName: String) -> Never {
   let tapStats = tapController.stopAndSnapshot()
   let compositorStats = compositor.stopAndSnapshot()
@@ -452,12 +455,12 @@ signal(SIGINT, SIG_IGN)
 signal(SIGTERM, SIG_IGN)
 private let interruptSource = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
 interruptSource.setEventHandler {
-  finish(signalName: "SIGINT")
+  MainActor.assumeIsolated { finish(signalName: "SIGINT") }
 }
 interruptSource.resume()
 private let terminateSource = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
 terminateSource.setEventHandler {
-  finish(signalName: "SIGTERM")
+  MainActor.assumeIsolated { finish(signalName: "SIGTERM") }
 }
 terminateSource.resume()
 
