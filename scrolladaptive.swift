@@ -455,12 +455,12 @@ signal(SIGINT, SIG_IGN)
 signal(SIGTERM, SIG_IGN)
 private let interruptSource = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
 interruptSource.setEventHandler {
-  MainActor.assumeIsolated { finish(signalName: "SIGINT") }
+  MainActor.assumeIsolated { () -> Void in finish(signalName: "SIGINT") }
 }
 interruptSource.resume()
 private let terminateSource = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
 terminateSource.setEventHandler {
-  MainActor.assumeIsolated { finish(signalName: "SIGTERM") }
+  MainActor.assumeIsolated { () -> Void in finish(signalName: "SIGTERM") }
 }
 terminateSource.resume()
 
